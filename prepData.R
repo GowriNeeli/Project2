@@ -1,0 +1,232 @@
+
+      ##############################################################################
+      ##############################################################################
+      ###                                                                        ###
+      ###                               Project 2:                               ###
+      ###                                                                        ###
+      ##############################################################################
+      ##############################################################################
+
+
+#######################################################################################################################
+# Loading Libraries, and data
+#######################################################################################################################
+library(dplyr)
+library(reshape)
+
+# setting up and loading loan data
+rm(list=ls())
+setwd('/Users/jfdarre/Documents/NYCDS/Project2')
+report_date = 201506
+load("data/LC.RData")
+
+
+#######################################################################################################################
+# useful functions that we will use to create bucket names
+#######################################################################################################################
+
+# used to create FICO bins to group fico scores
+bin_name = function(x) {
+  low = 490 + (x - 1) * 30
+  high = low + 30
+  paste(low, high, sep = "-")
+}
+
+
+#######################################################################################################################
+# Modifying, cleaning the data and adding usefull columns to the original data
+#######################################################################################################################
+
+# removing policy_code == 2, i.e. "not public" and then removing the comlumn
+LC = filter(LC, policy_code == 1)
+LC = select(LC, -policy_code)
+
+# removing 28 records with a lot of missing data:
+LC = filter(LC, !is.na(pub_rec))
+
+# Filtering out the entries where last_fico_range_high = 0
+LC = filter(LC, last_fico_range_high != 0)
+
+# Removing the loans without any entry for revol_util
+LC = filter(LC, revol_util != "")
+
+# Removing the loans with fico scores < 660 as they are very few of them, and LC changed their
+# policy and does not issue loan for scores below 660
+LC = filter(LC, fico_range_high >= 660)
+
+# Removing "Does not meet the credit policy.  Status:" from:
+# Does not meet the credit policy.  Status:Charged Off
+# Does not meet the credit policy.  Status:Current
+# Does not meet the credit policy.  Status:Fully Paid
+LC = mutate(LC, loan_status_new =
+                ifelse(grepl("Does not meet the credit policy.  Status:", loan_status),
+                       gsub("Does not meet the credit policy.  Status:","",loan_status),
+                       loan_status))
+
+# adding issue year, quarter
+Months = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+LC = mutate(LC, issue_y = strtoi(substr(issue_d, 5, 9)),
+                issue_m = match(substr(issue_d, 1, 3),Months),
+                issue_ym = issue_y * 100 + issue_m,
+                issue_q = ceiling(issue_m / 3),
+                issue_yq = paste(issue_y, "-Q", issue_q, sep = ""),
+                n = 1)
+
+LC = mutate(LC, last_pymnt_ym = strtoi(substr(last_pymnt_d, 5, 9)) * 100 + match(substr(last_pymnt_d, 1, 3),Months))
+LC = mutate(LC, last_pymnt_ym = ifelse(is.na(last_pymnt_ym), issue_ym, last_pymnt_ym))
+
+# FICO buckets for future visualizations
+LC = mutate(LC, FICO_buckets_Original = ceiling((fico_range_high - 490) / 30),
+                FICO_buckets_Last = ceiling((fico_range_high - 490) / 30),
+                FICO_bin_name_Original = sapply(FICO_buckets_Original, bin_name),
+                FICO_bin_name_Last = sapply(FICO_buckets_Last, bin_name))
+
+# Add a feature "matured" for Loans that have or would have matured by report_date
+LC = mutate(LC, matured = ifelse((issue_ym + ifelse(term == " 36 months", 300, 500)) > report_date, F, T))
+
+# turn term in to numeric:
+LC = mutate(LC, terms = as.numeric(gsub(" months*","",term)))
+
+# give LC grade numeric values
+sub_grade_vec = unique(LC$sub_grade) %>% .[order(., decreasing = T)]
+LC = mutate(LC, LC_score = match(sub_grade, sub_grade_vec))
+
+# adding a feature credit_ym corresponding to how many years old is the credit history of a borrower:
+LC = mutate(LC, credit_ym = round(((floor(issue_ym/100)*100 + ((issue_ym - floor(issue_ym/100)*100)-1)/12*100)
+                                   - (strtoi(substr(earliest_cr_line, 5, 9)) * 100 + (match(substr(earliest_cr_line, 1, 3),Months)-1)/12*100))/100,1))
+
+# creating issue_y buckets:
+LC = mutate(LC, issue_bucket = ifelse(issue_y <= 2012, "2007-2012", issue_y))
+
+# delinq_2yrs buckets:
+LC = mutate(LC, Delinquencies_bucket = ifelse(delinq_2yrs >= 2, "2+", delinq_2yrs))
+
+# inq_last_6mths buckets:
+LC = mutate(LC, Inquiries_bucket = ifelse(inq_last_6mths >= 5, "5+", 
+                                    ifelse(inq_last_6mths >= 3, "3-4", 
+                                    ifelse(inq_last_6mths >= 1, "1-2", 0))))
+
+# public record buckets: 
+LC = mutate(LC, Public_Record_bucket = ifelse(pub_rec >= 3, "3+",
+                                       ifelse(pub_rec >= 2, "2",
+                                       ifelse(pub_rec >= 1, "1", "0"))))
+
+# Annual income quantile buckets:
+groupvec = quantile(LC$annual_inc, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, Annual_Income_qbucket = cut(LC$annual_inc, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+
+# DTI quantile buckets:
+groupvec = quantile(LC$dti, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, DTI_qbucket = cut(LC$dti, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+?quantile
+# Revolving balance quantile buckets:
+LC = mutate(LC, revol = as.numeric(gsub("%","",revol_util)))
+groupvec = quantile(LC$revol, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, Revol_Util_qbucket = cut(LC$revol, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+
+# Revolving balance quantile buckets:
+groupvec = quantile(LC$revol_bal, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, Revol_Bal_qbucket = cut(LC$revol_bal, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+
+# total accounts buckets:
+groupvec = quantile(LC$total_acc, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, Total_Accounts_qbucket = cut(LC$total_acc, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+
+# open accounts buckets:
+groupvec = quantile(LC$open_acc, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, Open_Accounts_qbucket = cut(LC$open_acc, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+
+# credit_y quantile buckets:
+groupvec = quantile(LC$credit_ym, seq(0,1,0.1))
+labels = c(0, prettyNum(groupvec[2:10], big.mark = ","), "+inf")
+labels = paste(labels[1:10], labels[2:11], sep = "-")
+LC = mutate(LC, Credit_Age_qbucket = cut(LC$credit_ym, breaks = groupvec, labels = factor(labels), include.lowest=TRUE))
+
+# reduce the number of categories of purpose
+LC = mutate(LC, Purpose = ifelse(purpose == "credit_card" | purpose == "debt_consolidation", "debt",
+                          ifelse(purpose == "car" | purpose == "major_purchase" | purpose == "vacation" | purpose == "wedding" | purpose == "medical" | purpose == "other", "purchase",
+                          ifelse(purpose == "house" | purpose == "home_improvement" | purpose == "moving" | purpose == "renewable_energy", "purchase",
+                                 purpose))))
+
+# reduce the number of categories of purpose
+LC = mutate(LC, Home_Ownership = ifelse(home_ownership == "ANY" | home_ownership == "NONE", "OTHER", home_ownership))
+
+# reducing the range of credit_ym:
+LC = mutate(LC, credit_y = pmin(credit_ym, 20))
+
+# reducing the range of credit_ym:
+LC = mutate(LC, inq = pmin(inq_last_6mths, 20))
+
+# creating a numeric int_rate
+LC = mutate(LC, rate = as.numeric(gsub("%", "", int_rate)))
+
+# creating a numeric emp_length
+LC = mutate(LC, emp = ifelse(emp_length == "n/a", 0,
+                      ifelse(emp_length == "< 1 year", 0.5,
+                      ifelse(emp_length == "10+ years", 10,
+                      as.numeric(gsub(" years*","",emp_length))))))
+
+# reduce income such that no income is greater than 200K:
+LC = mutate(LC, income = pmin(annual_inc, 200000))
+
+# reduce income such that no income is greater than 200K:
+LC = mutate(LC, balance = pmin(annual_inc, 100000))
+
+# reduce delinq_2yrs such that no delinq_2yrs is greater than 10:
+LC = mutate(LC, delinq = pmin(delinq_2yrs, 5))
+
+# reduce open_acc such that no open_acc is greater than 30:
+LC = mutate(LC, accounts = pmin(open_acc, 30))
+
+# reduce pub_rec such that no pub_rec is greater than 10:
+LC = mutate(LC, records = pmin(pub_rec, 5))
+
+# creating a numeric revol_util and maxing it to 100
+LC = mutate(LC, revol_util_new = as.numeric(gsub("%", "", revol_util)))
+LC = mutate(LC, revol_util_maxed = pmin(revol_util_new, 100))
+
+# just adding better names to some variables:
+LC = mutate(LC, LC_Grade = grade)
+
+# Simplifying Loan Status for investment summary:
+LC = mutate(LC, Status = ifelse(loan_status_new %in% c("Current", "In Grace Period", "Late (16-30 days)"), "Current",
+                         ifelse(loan_status_new %in% c("Charged Off", "Late (31-120 days)", "Default"), "Charged",
+                                "Paid")))
+
+
+
+#######################################################################################################################
+# Saving data
+#######################################################################################################################
+
+LCtest = filter(LC, issue_ym >= 200901)
+nrow(LCtest)
+nrow(LC)
+
+LCtest = select(LCtest, -member_id, -funded_amnt_inv, 
+               -int_rate, -emp_title, -emp_length, -verification_status,
+               -loan_status, -pymnt_plan, -url, -desc, -title, -zip_code, 
+               -addr_state, -earliest_cr_line, -fico_range_low, -mths_since_last_delinq,
+               -mths_since_last_record, -revol_util, -initial_list_status, -out_prncp,
+               -out_prncp_inv, -total_pymnt, -total_rec_int,
+               -total_rec_late_fee, -collection_recovery_fee, -next_pymnt_d,
+               -last_credit_pull_d, -last_fico_range_high, -last_fico_range_low,
+               -collections_12_mths_ex_med, -mths_since_last_major_derog,
+               -issue_q, -issue_yq, -issue_y, -issue_m, -n)
+
+setwd('/Users/jfdarre/Documents/NYCDS/Project2')
+save(LCtest, file = "data/LCtest.RData")
+
+t(filter(LCtest, id == "621218"))

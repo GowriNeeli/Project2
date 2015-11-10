@@ -1,0 +1,325 @@
+# Filtering data for the bubble plot for the Explore data tab
+filter_plot_data = function(data, option) {
+  if (option == "ALL") { return(data) }
+
+  if (option == "Matured") {
+    data = filter(data, matured == T)
+  }
+
+  if (option == "Survived") { 
+    data = filter(data, Status == "Paid")
+  }
+
+  if (option == "Defaulted") {
+    data = filter(data, Status == "Charged")
+  }
+  
+  if (option == "Current") { 
+      data = filter(data, Status == "Current")
+  }
+  
+  return(data)
+}
+
+
+# TBD
+updateInvestment = function(saved_data) {
+  updateNumericInput(session, "to_invest", choices = saved_data$to_invest)
+}
+
+
+# Saving the investment settings in a local directory
+saveData = function(data, name, Dir) {
+  # Create a unique file name
+  fileName = sprintf("%s_%s.RDS", name, as.integer(Sys.time()))
+  # Write the file to the local system
+  saveRDS(data, file = file.path(Dir, fileName))
+}
+
+
+# Loading previous investment settings from a local directory
+loadData = function(fileName) {
+  fileName = paste0(outputDir, "/", fileName)
+  data = readRDS(fileName)
+  return(data)
+}
+
+
+# Loading the Hall of Fame:
+load_HOF = function(files) {
+  # Read all the files into a list
+  files = list.files(submitDir, full.names = TRUE)
+  data = lapply(files, readRDS) 
+  # Concatenate all data together into one data.frame
+  data = do.call(rbind, data)
+  return(data)
+}
+
+
+# function to run simulation
+invest = function(my_data, to_invest, t, re_invest, max_amount, cash_rate, seed) {
+  t = as.numeric(format(t, "%Y%m"))
+  my_data = mutate(my_data, invested = 0, pymnt = 0)
+  range = sort(unique(pmax(range,t)))
+  
+  portfolio = c()
+  summary = c()
+  summary$time = t
+  summary$invested = 0
+  summary$received = 0
+  summary$Reinvested = 0
+  summary$Cash = 0
+  summary$Principal = 0
+  summary = as.data.frame(summary)
+  i = 0
+
+  withProgress(message = 'Running simulation...', min = 0, max = length(range) + 10, {
+    for (t in range) {
+      i = i + 1
+      incProgress(1, detail = paste0("Period: ", i) )
+      summary_temp = c()
+      summary_temp[1] = i
+      
+      if (!is.null(portfolio)) { 
+        portfolio = mutate(portfolio, pymnt = ifelse(last_pymnt_ym == t, 
+                                                     ifelse(loan_status_new == "Fully Paid",
+                                                            prncpl + invested / loan_amnt * recoveries,
+                                                            invested / loan_amnt * (last_pymnt_amnt + recoveries)),
+                                                     ifelse(last_pymnt_ym  > t, invested / loan_amnt * installment, 0)),
+                                      prncpl = ifelse(last_pymnt_ym  > t, prncpl - (installment*invested/loan_amnt - prncpl*(rate/1200)), 0))
+        to_invest = to_invest + re_invest/100 * sum(portfolio$pymnt)
+        summary_temp[2] = sum(portfolio$invested)
+        summary_temp[3] = sum(portfolio$pymnt)
+        summary_temp[4] = to_invest #(    re_invest/100) * sum(portfolio$pymnt) + tail(summary$Reinvested, 1) * (1 + cash_rate / 100)^(1/12)
+        summary_temp[5] = (1 - re_invest/100) * sum(portfolio$pymnt) + tail(summary$Cash,       1) * (1 + cash_rate / 100)^(1/12)
+        summary_temp[6] = sum(portfolio$prncpl)
+        } else { 
+        summary_temp[2] = to_invest
+        summary_temp[3] = 0
+        summary_temp[4] = 0
+        summary_temp[5] = 0
+        summary_temp[6] = 0
+      }
+      
+      summary = rbind(summary, summary_temp)
+      
+      data = filter(my_data, issue_ym == t)
+      if (nrow(data) == 0) { next }
+      
+      purchase = buy(data, to_invest, max_amount, seed)
+      to_invest = purchase$to_invest_next
+      portfolio = rbind(portfolio, purchase$purchased)
+    }
+  })
+  summary = summary[2:nrow(summary),]
+  result = list(portfolio = portfolio,
+                portfolio_short = portfolio[,c("id","issue_d","loan_amnt",
+                                               "term","rate","grade","Purpose",
+                                               "invested","loan_status_new")],
+                summary = summary)
+  return(result)
+}
+
+
+# function made to process the purchase of loans for each period
+buy = function(data, to_invest, max_amount, seed) {
+  n = nrow(data)
+  purchased_loans = c()
+  set.seed(seed)
+  
+  for (i in 1:n) {
+    if (to_invest < max_amount) { break }
+    select = ceiling(runif(1)*nrow(data))
+    temp = data[select,]
+    invest = pmin(max_amount, temp$loan_amnt)
+    temp$invested = invest
+    temp$prncpl = invest
+    to_invest = to_invest - invest
+    purchased_loans = rbind(purchased_loans, temp)
+    data = data[-select,]
+    if (nrow(data) == 0) { break }
+  }
+
+  result = list(purchased = purchased_loans, to_invest_next = to_invest)
+  return(result)
+}
+
+
+# plotting a histogram showing how the investment grows in invest tab
+plot_portfolio = function(data) {
+  temp = stack(data[,c(6,5,4)])
+  temp$time = data$time
+  temp = rename(temp, c("ind"="Received"))
+  temp$values = temp$values / data$invested[1]
+  cbPalette <- c("#fee08b", "#fc8d59", "#80cc33")
+  
+  ggplot(temp) +
+    geom_histogram(aes(x = time, y = values, fill = Received), stat = "identity", alpha = 0.95, width = 0.9) +
+    scale_fill_manual(values = cbPalette) +
+    ggtitle("Performance of the portfolio") +
+    ylab("Return relative to original investment") + 
+    xlab("Time period in months") +
+    scale_x_continuous(breaks = seq(0, 120, 6)) +
+    geom_hline(aes(yintercept = 1), linetype = 1, colour = "#d53e4f", size = 2, alpha = 0.9) +
+    theme(plot.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18, hjust=0)) +
+    theme(axis.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+    theme(axis.text = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15)) +
+    theme(legend.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+    theme(legend.text = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15)) +
+    theme(legend.key = element_rect(fill = "#fefefe")) +
+    theme(panel.background = element_rect(fill = backcolor), 
+          plot.background = element_rect(fill = backcolor, color = backcolor),
+          legend.background = element_rect(fill = backcolor))
+}
+
+
+# prepare plot data for the investment performance in invest tab:
+investment_summup = function(x){
+  group_by_(x, "Status") %>% summarize(
+    Nb                 = n(),
+    Gd                 = sub_grade_vec[mean(LC_score)],
+    FICO               = round(mean(fico_range_high),1),
+    Amnt               = paste0(round(mean(loan_amnt)/1000,0), "k"),
+    Trm                = round(mean(terms),1),
+    Rate               = round(mean(rate),1),
+    Emp                = round(mean(emp),1),
+    Inc                = paste0(round(mean(annual_inc)/1000,0), "k"),
+    DTI                = round(mean(dti),1),
+    Delq               = round(mean(delinq_2yrs),1),
+    CrdtY              = round(mean(credit_ym),1),
+    Inq                = round(mean(inq_last_6mths),1),
+    Acc                = round(mean(open_acc),1),
+    Rec                = round(mean(pub_rec),1),
+    RvBl               = paste0(round(mean(revol_bal)/1000,0), "k"),
+    RvUt               = round(mean(revol_util_new),1)
+  )
+}
+
+
+# transpose investment summary in invest tab:
+transpose = function(data) {
+  # first remember the names
+  n = data$Status
+  
+  # transpose all but the first column (name)
+  data = as.data.frame(t(data[,-1]))
+  colnames(data) = n
+  Stats = c("Number",    
+            "LC sub grade",
+            "FICO score",
+            "Avg Loan Amount",
+            "Term",
+            "Interest Rate",
+            "Employment Length",
+            "Annual Income",
+            "DTI",
+            "Delinquency 2yrs",
+            "Credit Age",
+            "Inquieries 6mths",
+            "Number of Accounts",
+            "Public Records",
+            "Revolving Balance",
+            "Revolving Utilized")
+  data = cbind(Stats, data)
+  return(data)
+}
+
+
+# prepare plot data:
+full_summup = function(x, y){
+  group_by_(x, y) %>% summarize(
+    LC_score           = round(mean(LC_score/1),1),
+    LC_sub_grade       = sub_grade_vec[mean(LC_score/1)],
+    FICO_score         = round(mean(fico_range_high/1),1),
+    Avg_Loan_Amount    = round(mean(loan_amnt/1),1),
+    Loan_Amount_in_mm  = round(sum(loan_amnt/1)/1000000,1),
+    Term               = round(mean(terms/1),1),
+    Interest           = round(mean(rate/1),1),
+    Employment_Length  = round(mean(emp/1),1),
+    Annual_Income      = round(mean(annual_inc/1),1),
+    DTI                = round(mean(dti/1),1),
+    Delinquency_2yrs   = round(mean(delinq_2yrs/1),1),
+    Credit_Age         = round(mean(credit_ym/1),1),
+    Inquieries_6mths   = round(mean(inq_last_6mths/1),1),
+    Number_of_Accounts = round(mean(open_acc/1),1),
+    Public_Records     = round(mean(pub_rec/1),1),
+    Revolving_Balance  = round(mean(revol_bal/1),1),
+    Revolving_Utilized = round(mean(revol_util_new/1),1),
+    Defaults           = round(sum(loan_status_new == "Charged Off") / n() * 100, 2),
+    Number_of_Loans    = n()
+  )
+}
+
+
+# custom bubble plot function:
+bub_plot = function(data, a, b, c, d) {
+  plot_data = full_summup(data, a)[,c(a, b, c, d)]
+  low_size = min(plot_data[, d])/max(plot_data[, d])*80
+  x_range = max(plot_data[, b]) - min(plot_data[, b])
+  y_range = max(plot_data[, c]) - min(plot_data[, c])
+  x_lim = c(min(plot_data[, b]) - 0.2 * x_range,max(plot_data[, b]) + 0.2 * x_range)
+  y_lim = c(min(plot_data[, c]) - 0.2 * y_range,max(plot_data[, c]) + 0.2 * y_range)
+  
+  p = ggplot(plot_data, aes_string(x=b, y=c, size=d, color=a)) +
+        geom_point(alpha = 0.8, guide = "") +
+        scale_size(range = c(low_size,50), guide = F) +
+        ggtitle(paste0(a,": ",b," vs. ",c," with size representing ",d)) +
+        scale_color_brewer(palette="Spectral") +
+        theme(plot.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18, hjust=0)) +
+        theme(axis.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+        theme(axis.text = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15)) +
+        theme(legend.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+        theme(legend.text = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15)) +
+        theme(legend.key = element_rect(fill = backcolor, color = backcolor)) +
+        theme(panel.background = element_rect(fill = backcolor), 
+              plot.background = element_rect(fill = backcolor, color = backcolor),
+              legend.background = element_rect(fill = backcolor)) +
+        coord_cartesian(xlim = x_lim, ylim = y_lim)
+  return(p)
+}
+
+
+# create histogram of the amount in each category:
+plot_amounts = function(data, a) {
+  c = "Loan_Amount_in_mm"
+  plot_data = full_summup(data, a)[,c(a, c)]
+  p = ggplot(plot_data, aes_string(x=a, y=c, fill=a)) +
+        geom_bar(stat="identity", alpha = 0.95) +
+        scale_size(range = c(low_size,100), guide = F) +
+        ggtitle(paste0(c," in each ",a)) +
+        scale_fill_brewer(palette="Spectral") +
+        theme(plot.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18, hjust=0)) +
+        theme(axis.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+        theme(axis.text.y = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15),
+              axis.text.x = element_blank()) +
+        theme(legend.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+        theme(legend.text = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15)) +
+        theme(legend.key = element_rect(fill = "#fefefe")) +
+        theme(panel.background = element_rect(fill = backcolor), 
+              plot.background = element_rect(fill = backcolor, color = backcolor),
+              legend.background = element_rect(fill = backcolor))
+  return(p)
+}
+
+
+# create histogram of the amount in each category:
+plot_number = function(data, a) {
+  c = "Number_of_Loans"
+  plot_data = full_summup(data, a)[,c(a, c)]
+  p = ggplot(plot_data, aes_string(x=a, y=c, fill=a)) +
+        geom_bar(stat="identity", alpha = 0.95) +
+        scale_size(range = c(low_size,100), guide = F) +
+        ggtitle(paste0(c," in each ",a)) +
+        scale_fill_brewer(palette="Spectral") +
+        theme(plot.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18, hjust=0)) +
+        theme(axis.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+        theme(axis.text.y = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15),
+              axis.text.x = element_blank()) +
+        theme(legend.title = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=18)) +
+        theme(legend.text = element_text(family = "Trebuchet MS", color="#fefefe", face="bold", size=15)) +
+        theme(legend.key = element_rect(fill = "#fefefe")) +
+        theme(panel.background = element_rect(fill = backcolor), 
+              plot.background = element_rect(fill = backcolor, color = backcolor),
+              legend.background = element_rect(fill = backcolor))
+  return(p)
+}
