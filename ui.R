@@ -40,7 +40,7 @@ shinyUI(
       
       wellPanel(
         h3("Instructions:"),
-        h5("1. Checkout the report that we already made for porject1 where we explore the relationship between defaults rates and all the features available to us."), 
+        h5("1. Checkout the report that we already made for ", span(a(href="http://blog.nycdatascience.com/students-work/project-1-analysis-of-lending-clubs-data/", "porject1 ")),  "where we explore the relationship between default rates and all the features available to us."), 
         h5("2. You can run more analysis of the data yourself using the tab: 'Explore the data' where you can graph different discrete variable against any continuous variable available."),
         h5("3. When you are ready, move on to the 'Invest' tab and try running different simulations corresponding to your selected strategy and see how you perform!"),
         h5("4. This is yet to be done but we would like to add a Machine Learning tab where you will be able to run many kind of ML techniques and see how they perform!"),
@@ -483,7 +483,7 @@ shinyUI(
     ),
     
     tabPanel("Code",
-      h4("Please find below the code:"),      
+      h4("Please find below the code, and the link to the ", span(a(href="https://github.com/jfdarre/Project2", "github"))),      
       tabsetPanel(
         type = "pills", 
         position = "left",
@@ -496,7 +496,19 @@ shinyUI(
     ),
     
     tabPanel("About",
-      h4("hi!")
+      wellPanel(
+        h5("App made by Jean-Francois Darre"),
+        h5("The code is available on ", span(a(href="https://github.com/jfdarre/Project2", "github"))),
+        h5("The link to the ", span(a(href="http://blog.nycdatascience.com/students-work/lending-club-investment-simulator/", "publication")), " on NYC Data Science Academy's ", span(a(href="http://nycdatascience.com/", "website"))),
+        h5("You can also read the preparation paper ", span(a(href="http://blog.nycdatascience.com/students-work/project-1-analysis-of-lending-clubs-data/", "here")), "."),
+        h5("Thank you for your time and we hope you are enjoying the app!")
+      ),
+      
+      wellPanel(
+        h5("Jean-Francois holds a MSc in Statistics from Stanford University and MSc in Applied Math with a minor in Physics from École des Mines de Nancy in France."),
+        h5("He is an enthusiastic problem-solver, excited by the pursuit of the most elegant solutions. As a data scientist, he has build a strong foundation in R, SQL, Python, C++."),
+        h5("Formerly a quantitative analyst and structured credit trader in New York, JF is well-versed in analytical modeling applied to finance.  He is also an avid tennis and soccer player.")
+      )
     )
   )
 )
